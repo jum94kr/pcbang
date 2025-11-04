@@ -7,8 +7,8 @@ from functools import wraps
 app = Flask(__name__)
 
 # ── 보안/환경 변수 ────────────────────────────────────────────────────────────
-# 운영 시에는 Render 대시보드의 Environment Variables에 아래 키 지정 권장
-# ADMIN_USER=admin / ADMIN_PASS=방영민1! / SECRET_KEY=임의문자열
+# 운영 시 Render의 Environment Variables에 설정 권장:
+# ADMIN_USER=admin / ADMIN_PASS=방영민1! / SECRET_KEY=임의랜덤문자열
 app.secret_key = os.getenv("SECRET_KEY", "pcbang_secret")
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
 ADMIN_PASS = os.getenv("ADMIN_PASS", "방영민1!")
@@ -50,10 +50,14 @@ def db():
     conn.row_factory = sqlite3.Row
     return conn
 
-# ── 공용 유틸 ────────────────────────────────────────────────────────────────
+# ── 유틸 ─────────────────────────────────────────────────────────────────────
 def norm(s: str) -> str:
     """앞뒤 공백 제거 + 한글 정규화(NFC)"""
     return unicodedata.normalize("NFC", (s or "")).strip()
+
+def secure_eq(a: str, b: str) -> bool:
+    """비-ASCII 포함 안전 비교: UTF-8 바이트로 compare_digest"""
+    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 def hash_color(name: str):
     h = int(hashlib.sha256(name.encode("utf-8")).hexdigest(), 16)
@@ -68,7 +72,8 @@ def hours_between(start, end):
         s = sH*60+sM; e = eH*60+eM
         if e < s: e += 24*60
         return (e-s)/60.0
-    except: return 0.0
+    except: 
+        return 0.0
 
 # ── 인증 ────────────────────────────────────────────────────────────────────
 def login_required(f):
@@ -85,10 +90,9 @@ def login():
     if request.method == "POST":
         uid = norm(request.form.get("username"))
         pwd = norm(request.form.get("password"))
-        # 타이밍 공격 방지 비교 + 한글/공백 정규화
-        if hmac.compare_digest(uid, norm(ADMIN_USER)) and hmac.compare_digest(pwd, norm(ADMIN_PASS)):
+        # 안전 비교(UTF-8 바이트) + 정규화
+        if secure_eq(uid, norm(ADMIN_USER)) and secure_eq(pwd, norm(ADMIN_PASS)):
             session["logged_in"] = True
-            # (선택) 보안 설정 강화
             session.permanent = True
             return redirect(url_for("dashboard"))
         error = "아이디 또는 비밀번호가 올바르지 않습니다."

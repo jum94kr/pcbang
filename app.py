@@ -1,21 +1,19 @@
 from flask import Flask, render_template, request, redirect, url_for, session, send_file, jsonify
-import sqlite3, os, io, hashlib, json, random, hmac, unicodedata
+import sqlite3, os, io, hashlib, random, hmac, unicodedata
 import pandas as pd
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from functools import wraps
 
+# ── 기본 설정 ───────────────────────────────────────────────────────────────
 app = Flask(__name__)
-
-# ── 보안/환경 변수 ────────────────────────────────────────────────────────────
-# 운영 시 Render의 Environment Variables에 설정 권장:
-# ADMIN_USER=admin / ADMIN_PASS=방영민1! / SECRET_KEY=임의랜덤문자열
 app.secret_key = os.getenv("SECRET_KEY", "pcbang_secret")
+
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "방영민1!")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "방영민1!")  # 영문자판 쓰려면 환경변수에 qkddudals1! 설정
 
 BASE_DIR = os.path.dirname(__file__)
 DB_PATH = os.path.join(BASE_DIR, 'data', 'pcbang.db')
-BRANCHES = ["지점 A", "지점 B"]  # 필요 시 확장
+BRANCHES = ["지점 A", "지점 B"]
 
 # ── DB ───────────────────────────────────────────────────────────────────────
 def init_db():
@@ -42,7 +40,17 @@ def init_db():
     )""")
     conn.commit(); conn.close()
 
-# 모듈 로드시 즉시 초기화 (gunicorn에서도 동작)
+def ensure_schema():
+    """테이블 없으면 즉시 생성 (배포 초기 안전장치)"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("SELECT 1 FROM staff LIMIT 1")
+        conn.execute("SELECT 1 FROM shifts LIMIT 1")
+        conn.close()
+    except sqlite3.OperationalError:
+        init_db()
+
+# 앱 로드 시 1회 보장
 init_db()
 
 def db():
@@ -52,11 +60,9 @@ def db():
 
 # ── 유틸 ─────────────────────────────────────────────────────────────────────
 def norm(s: str) -> str:
-    """앞뒤 공백 제거 + 한글 정규화(NFC)"""
     return unicodedata.normalize("NFC", (s or "")).strip()
 
 def secure_eq(a: str, b: str) -> bool:
-    """비-ASCII 포함 안전 비교: UTF-8 바이트로 compare_digest"""
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
 
 def hash_color(name: str):
@@ -90,7 +96,6 @@ def login():
     if request.method == "POST":
         uid = norm(request.form.get("username"))
         pwd = norm(request.form.get("password"))
-        # 안전 비교(UTF-8 바이트) + 정규화
         if secure_eq(uid, norm(ADMIN_USER)) and secure_eq(pwd, norm(ADMIN_PASS)):
             session["logged_in"] = True
             session.permanent = True
@@ -103,15 +108,81 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
-# ── 대시보드/이벤트 API ─────────────────────────────────────────────────────
+# ── 페이지 ──────────────────────────────────────────────────────────────────
 @app.route("/")
 @login_required
 def dashboard():
+    ensure_schema()
     return render_template("dashboard.html", branches=BRANCHES)
+
+@app.route("/staff")
+@login_required
+def staff_list():
+    ensure_schema()
+    conn = db()
+    rows = conn.execute("SELECT * FROM staff ORDER BY name").fetchall()
+    conn.close()
+    return render_template("staff.html", staff=rows, color=hash_color)
+
+@app.route("/staff/add", methods=["GET","POST"])
+@login_required
+def staff_add():
+    ensure_schema()
+    if request.method=="POST":
+        name=norm(request.form.get("name",""))
+        phone=norm(request.form.get("phone",""))
+        shift=request.form.get("shift_type","day")
+        days=",".join(request.form.getlist("work_days"))
+        conn=db()
+        conn.execute("INSERT INTO staff(name,phone,shift_type,work_days) VALUES (?,?,?,?)",
+                     (name,phone,shift,days))
+        conn.commit(); conn.close()
+        return redirect(url_for("staff_list"))
+    return render_template("staff_form.html", item=None)
+
+@app.route("/staff/edit/<int:sid>", methods=["GET","POST"])
+@login_required
+def staff_edit(sid):
+    ensure_schema()
+    conn=db()
+    row=conn.execute("SELECT * FROM staff WHERE id=?", (sid,)).fetchone()
+    if not row:
+        conn.close(); return "Not found",404
+    if request.method=="POST":
+        name=norm(request.form.get("name", row["name"]))
+        phone=norm(request.form.get("phone", row["phone"]))
+        shift=request.form.get("shift_type", row["shift_type"])
+        days=",".join(request.form.getlist("work_days")) or row["work_days"]
+        conn.execute("UPDATE staff SET name=?, phone=?, shift_type=?, work_days=? WHERE id=?",
+                     (name,phone,shift,days,sid))
+        conn.commit(); conn.close()
+        return redirect(url_for("staff_list"))
+    conn.close()
+    return render_template("staff_form.html", item=row)
+
+@app.route("/staff/delete/<int:sid>", methods=["POST"])
+@login_required
+def staff_delete(sid):
+    ensure_schema()
+    conn=db()
+    conn.execute("DELETE FROM staff WHERE id=?", (sid,))
+    conn.commit(); conn.close()
+    return redirect(url_for("staff_list"))
+
+# ── 캘린더 API (클릭/선택 → 모달로 추가/삭제) ───────────────────────────────
+@app.route("/api/staff")
+@login_required
+def api_staff():
+    ensure_schema()
+    conn = db()
+    rows = conn.execute("SELECT id, name, shift_type FROM staff ORDER BY name").fetchall()
+    conn.close()
+    return jsonify([{"id": r["id"], "name": r["name"], "shift_type": r["shift_type"]} for r in rows])
 
 @app.route("/api/events")
 @login_required
 def api_events():
+    ensure_schema()
     start = request.args.get("start","")[:10]
     end   = request.args.get("end","")[:10]
     conn = db()
@@ -142,6 +213,7 @@ def api_events():
 @app.route("/api/schedule", methods=["POST"])
 @login_required
 def api_schedule_create():
+    ensure_schema()
     data = request.get_json(force=True)
     conn = db()
     conn.execute("""INSERT INTO shifts (staff_id, work_date, branch, start_time, end_time)
@@ -153,93 +225,9 @@ def api_schedule_create():
 @app.route("/api/schedule/<int:sid>", methods=["DELETE"])
 @login_required
 def api_schedule_delete(sid):
+    ensure_schema()
     conn = db()
     conn.execute("DELETE FROM shifts WHERE id=?", (sid,))
-    conn.commit(); conn.close()
-    return jsonify({"ok":True})
-
-# ── 직원 관리 ───────────────────────────────────────────────────────────────
-@app.route("/staff")
-@login_required
-def staff_list():
-    conn = db()
-    rows = conn.execute("SELECT * FROM staff ORDER BY name").fetchall()
-    conn.close()
-    return render_template("staff.html", staff=rows, color=hash_color)
-
-@app.route("/staff/add", methods=["GET","POST"])
-@login_required
-def staff_add():
-    if request.method=="POST":
-        name=norm(request.form.get("name",""))
-        phone=norm(request.form.get("phone",""))
-        shift=request.form.get("shift_type","day")
-        days=",".join(request.form.getlist("work_days"))  # "0,2,4"
-        conn=db()
-        conn.execute("INSERT INTO staff(name,phone,shift_type,work_days) VALUES (?,?,?,?)",
-                     (name,phone,shift,days))
-        conn.commit(); conn.close()
-        return redirect(url_for("staff_list"))
-    return render_template("staff_form.html", item=None)
-
-@app.route("/staff/edit/<int:sid>", methods=["GET","POST"])
-@login_required
-def staff_edit(sid):
-    conn=db()
-    row=conn.execute("SELECT * FROM staff WHERE id=?", (sid,)).fetchone()
-    if not row:
-        conn.close(); return "Not found",404
-    if request.method=="POST":
-        name=norm(request.form.get("name", row["name"]))
-        phone=norm(request.form.get("phone", row["phone"]))
-        shift=request.form.get("shift_type", row["shift_type"])
-        days=",".join(request.form.getlist("work_days")) or row["work_days"]
-        conn.execute("UPDATE staff SET name=?, phone=?, shift_type=?, work_days=? WHERE id=?",
-                     (name,phone,shift,days,sid))
-        conn.commit(); conn.close()
-        return redirect(url_for("staff_list"))
-    conn.close()
-    return render_template("staff_form.html", item=row)
-
-@app.route("/staff/delete/<int:sid>", methods=["POST"])
-@login_required
-def staff_delete(sid):
-    conn=db()
-    conn.execute("DELETE FROM staff WHERE id=?", (sid,))
-    conn.commit(); conn.close()
-    return redirect(url_for("staff_list"))
-
-# ── 자동 배정 ────────────────────────────────────────────────────────────────
-@app.route("/auto_assign", methods=["POST"])
-@login_required
-def auto_assign():
-    data = request.get_json(force=True)
-    start_str = data.get("monday")  # YYYY-MM-DD(월요일)
-    start = datetime.strptime(start_str,"%Y-%m-%d").date()
-    conn = db()
-    staff = conn.execute("SELECT * FROM staff").fetchall()
-    for i in range(7):
-        d = start + timedelta(days=i)
-        weekday = d.weekday()
-        day_staff  = [r for r in staff if r["shift_type"]=="day"   and str(weekday) in (r["work_days"] or "").split(",")]
-        night_staff= [r for r in staff if r["shift_type"]=="night" and str(weekday) in (r["work_days"] or "").split(",")]
-        random.shuffle(day_staff); random.shuffle(night_staff)
-        # 지점 A/B 각각 1명씩(가능할 때)
-        for idx, b in enumerate(BRANCHES):
-            if idx < len(day_staff):
-                sid = day_staff[idx]["id"]
-                exists = conn.execute("SELECT 1 FROM shifts WHERE work_date=? AND branch=? AND staff_id=? AND start_time='09:00' AND end_time='18:00'",
-                                      (d.isoformat(), b, sid)).fetchone()
-                if not exists:
-                    conn.execute("INSERT INTO shifts(staff_id,work_date,branch,start_time,end_time) VALUES (?,?,?,?,?)",
-                                 (sid, d.isoformat(), b, "09:00","18:00"))
-            if idx < len(night_staff):
-                sid = night_staff[idx]["id"]
-                exists = conn.execute("SELECT 1 FROM shifts WHERE work_date=? AND branch=? AND staff_id=? AND start_time='20:00' AND end_time='02:00'",
-                                      (d.isoformat(), b, sid)).fetchone()
-                if not exists:
-                    conn.execute("INSERT INTO shifts(staff_id,work_date,branch,start_time,end_time) VALUES (?,?,?,?,?)",
-                                 (sid, d.isoformat(), b, "20:00","02:00"))
     conn.commit(); conn.close()
     return jsonify({"ok":True})
 
@@ -247,6 +235,7 @@ def auto_assign():
 @app.route("/report")
 @login_required
 def report():
+    ensure_schema()
     conn = db()
     q = """
     SELECT st.id sid, st.name, st.phone, st.shift_type, sh.start_time, sh.end_time
@@ -263,6 +252,7 @@ def report():
 @app.route("/export_excel")
 @login_required
 def export_excel():
+    ensure_schema()
     conn = db()
     df = pd.read_sql_query("""
         SELECT st.name '직원', st.phone '전화', st.shift_type '타입',

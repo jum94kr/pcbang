@@ -1,1 +1,24 @@
-<h2>대시보드 (FullCalendar 예정)</h2>
+{% extends 'base.html' %}
+{% block content %}
+<div class="d-flex gap-3 align-items-center mb-3">
+  <h4 class="m-0">주간 시간표</h4>
+  <button id="btn-auto" class="btn btn-outline-primary">
+    자동 배정
+    <span id="auto-spinner" class="spinner-border spinner-border-sm d-none ms-2"></span>
+  </button>
+</div>
+<div class="row">
+  <div class="col-lg-9">
+    <div id="calendar" class="card p-3 shadow-sm"></div>
+  </div>
+  <div class="col-lg-3">
+    <div class="card p-3 shadow-sm">
+      <h6 class="fw-bold">지점</h6>
+      <ul class="list-group small mb-3">
+        {% for b in branches %}<li class="list-group-item">{{ b }}</li>{% endfor %}
+      </ul>
+      <a class="btn btn-sm btn-secondary" href="{{ url_for('staff_list') }}">직원 관리로 이동</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

@@ -1,16 +1,23 @@
 from flask import Flask, render_template, request, redirect, url_for, session, send_file, jsonify
-import sqlite3, os, io, hashlib, json, random
+import sqlite3, os, io, hashlib, json, random, hmac, unicodedata
 import pandas as pd
 from datetime import datetime, timedelta, date
 from functools import wraps
 
 app = Flask(__name__)
-app.secret_key = 'pcbang_secret'
+
+# ── 보안/환경 변수 ────────────────────────────────────────────────────────────
+# 운영 시에는 Render 대시보드의 Environment Variables에 아래 키 지정 권장
+# ADMIN_USER=admin / ADMIN_PASS=방영민1! / SECRET_KEY=임의문자열
+app.secret_key = os.getenv("SECRET_KEY", "pcbang_secret")
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "방영민1!")
+
 BASE_DIR = os.path.dirname(__file__)
 DB_PATH = os.path.join(BASE_DIR, 'data', 'pcbang.db')
 BRANCHES = ["지점 A", "지점 B"]  # 필요 시 확장
 
-# ---------- DB ----------
+# ── DB ───────────────────────────────────────────────────────────────────────
 def init_db():
     os.makedirs(os.path.join(BASE_DIR, 'data'), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
@@ -34,6 +41,8 @@ def init_db():
       FOREIGN KEY(staff_id) REFERENCES staff(id)
     )""")
     conn.commit(); conn.close()
+
+# 모듈 로드시 즉시 초기화 (gunicorn에서도 동작)
 init_db()
 
 def db():
@@ -41,31 +50,11 @@ def db():
     conn.row_factory = sqlite3.Row
     return conn
 
-# ---------- auth ----------
-def login_required(f):
-    @wraps(f)
-    def wrap(*a, **k):
-        if not session.get("logged_in"):
-            return redirect(url_for("login"))
-        return f(*a, **k)
-    return wrap
+# ── 공용 유틸 ────────────────────────────────────────────────────────────────
+def norm(s: str) -> str:
+    """앞뒤 공백 제거 + 한글 정규화(NFC)"""
+    return unicodedata.normalize("NFC", (s or "")).strip()
 
-@app.route("/login", methods=["GET","POST"])
-def login():
-    error = None
-    if request.method == "POST":
-        if request.form.get("username")=="admin" and request.form.get("password")=="방영민1!":
-            session["logged_in"]=True
-            return redirect(url_for("dashboard"))
-        error = "아이디 또는 비밀번호가 올바르지 않습니다."
-    return render_template("login.html", error=error)
-
-@app.route("/logout")
-def logout():
-    session.clear()
-    return redirect(url_for("login"))
-
-# ---------- utils ----------
 def hash_color(name: str):
     h = int(hashlib.sha256(name.encode("utf-8")).hexdigest(), 16)
     r = 80 + (h % 150)
@@ -81,7 +70,36 @@ def hours_between(start, end):
         return (e-s)/60.0
     except: return 0.0
 
-# ---------- dashboard ----------
+# ── 인증 ────────────────────────────────────────────────────────────────────
+def login_required(f):
+    @wraps(f)
+    def wrap(*a, **k):
+        if not session.get("logged_in"):
+            return redirect(url_for("login"))
+        return f(*a, **k)
+    return wrap
+
+@app.route("/login", methods=["GET","POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        uid = norm(request.form.get("username"))
+        pwd = norm(request.form.get("password"))
+        # 타이밍 공격 방지 비교 + 한글/공백 정규화
+        if hmac.compare_digest(uid, norm(ADMIN_USER)) and hmac.compare_digest(pwd, norm(ADMIN_PASS)):
+            session["logged_in"] = True
+            # (선택) 보안 설정 강화
+            session.permanent = True
+            return redirect(url_for("dashboard"))
+        error = "아이디 또는 비밀번호가 올바르지 않습니다."
+    return render_template("login.html", error=error)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+# ── 대시보드/이벤트 API ─────────────────────────────────────────────────────
 @app.route("/")
 @login_required
 def dashboard():
@@ -90,7 +108,6 @@ def dashboard():
 @app.route("/api/events")
 @login_required
 def api_events():
-    # FullCalendar: start & end(ISO8601)
     start = request.args.get("start","")[:10]
     end   = request.args.get("end","")[:10]
     conn = db()
@@ -137,7 +154,7 @@ def api_schedule_delete(sid):
     conn.commit(); conn.close()
     return jsonify({"ok":True})
 
-# ---------- staff ----------
+# ── 직원 관리 ───────────────────────────────────────────────────────────────
 @app.route("/staff")
 @login_required
 def staff_list():
@@ -150,8 +167,8 @@ def staff_list():
 @login_required
 def staff_add():
     if request.method=="POST":
-        name=request.form.get("name","").strip()
-        phone=request.form.get("phone","").strip()
+        name=norm(request.form.get("name",""))
+        phone=norm(request.form.get("phone",""))
         shift=request.form.get("shift_type","day")
         days=",".join(request.form.getlist("work_days"))  # "0,2,4"
         conn=db()
@@ -169,8 +186,8 @@ def staff_edit(sid):
     if not row:
         conn.close(); return "Not found",404
     if request.method=="POST":
-        name=request.form.get("name", row["name"]).strip()
-        phone=request.form.get("phone", row["phone"]).strip()
+        name=norm(request.form.get("name", row["name"]))
+        phone=norm(request.form.get("phone", row["phone"]))
         shift=request.form.get("shift_type", row["shift_type"])
         days=",".join(request.form.getlist("work_days")) or row["work_days"]
         conn.execute("UPDATE staff SET name=?, phone=?, shift_type=?, work_days=? WHERE id=?",
@@ -188,7 +205,7 @@ def staff_delete(sid):
     conn.commit(); conn.close()
     return redirect(url_for("staff_list"))
 
-# ---------- auto assign ----------
+# ── 자동 배정 ────────────────────────────────────────────────────────────────
 @app.route("/auto_assign", methods=["POST"])
 @login_required
 def auto_assign():
@@ -222,11 +239,10 @@ def auto_assign():
     conn.commit(); conn.close()
     return jsonify({"ok":True})
 
-# ---------- report & export ----------
+# ── 리포트/엑셀 ──────────────────────────────────────────────────────────────
 @app.route("/report")
 @login_required
 def report():
-    # 직원별 주간/전체 합계(시간)
     conn = db()
     q = """
     SELECT st.id sid, st.name, st.phone, st.shift_type, sh.start_time, sh.end_time

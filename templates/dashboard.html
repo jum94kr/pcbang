@@ -7,11 +7,12 @@
     <span id="auto-spinner" class="spinner-border spinner-border-sm d-none ms-2"></span>
   </button>
 </div>
-<div class="row">
-  <div class="col-lg-9">
+
+<div class="row g-3">
+  <div class="col-12 col-lg-9">
     <div id="calendar" class="card p-3 shadow-sm"></div>
   </div>
-  <div class="col-lg-3">
+  <div class="col-12 col-lg-3">
     <div class="card p-3 shadow-sm">
       <h6 class="fw-bold">지점</h6>
       <ul class="list-group small mb-3">
@@ -19,6 +20,49 @@
       </ul>
       <a class="btn btn-sm btn-secondary" href="{{ url_for('staff_list') }}">직원 관리로 이동</a>
     </div>
+  </div>
+</div>
+
+<!-- 근무 추가 모달 -->
+<div class="modal fade" id="addShiftModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog">
+    <form class="modal-content" id="addShiftForm">
+      <div class="modal-header">
+        <h5 class="modal-title">근무 추가</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-2">
+          <label class="form-label">직원</label>
+          <select class="form-select" id="fStaff" required></select>
+        </div>
+        <div class="mb-2">
+          <label class="form-label">지점</label>
+          <select class="form-select" id="fBranch" required>
+            {% for b in branches %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+          </select>
+        </div>
+        <div class="row g-2">
+          <div class="col-6">
+            <label class="form-label">날짜</label>
+            <input type="date" class="form-control" id="fDate" required>
+          </div>
+          <div class="col-3">
+            <label class="form-label">시작</label>
+            <input type="time" class="form-control" id="fStart" required>
+          </div>
+          <div class="col-3">
+            <label class="form-label">종료</label>
+            <input type="time" class="form-control" id="fEnd" required>
+          </div>
+        </div>
+        <div class="form-text mt-1">선택한 구간으로 기본 값이 들어갑니다. 수정 가능.</div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" type="submit">저장</button>
+        <button class="btn btn-outline-secondary" type="button" data-bs-dismiss="modal">취소</button>
+      </div>
+    </form>
   </div>
 </div>
 {% endblock %}

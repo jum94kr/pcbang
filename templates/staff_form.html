@@ -1,39 +1,19 @@
 {% extends 'base.html' %}
 {% block content %}
-<h4 class="mb-3">{{ '직원 수정' if item else '직원 추가' }}</h4>
+<h4>직원 추가</h4>
 <form method="post" class="card p-3 shadow-sm">
   <div class="row g-3">
-    <div class="col-md-4">
+    <div class="col-md-6">
       <label class="form-label">이름</label>
-      <input name="name" class="form-control" value="{{ item['name'] if item else '' }}" required>
+      <input name="name" class="form-control" required>
     </div>
-    <div class="col-md-4">
-      <label class="form-label">휴대폰</label>
-      <input name="phone" class="form-control" value="{{ item['phone'] if item else '' }}">
+    <div class="col-md-6">
+      <label class="form-label">전화번호</label>
+      <input name="phone" class="form-control">
     </div>
-    <div class="col-md-4">
-      <label class="form-label d-block">근무타입</label>
-      {% set st = item['shift_type'] if item else 'day' %}
-      <div class="btn-group" role="group">
-        <input type="radio" class="btn-check" name="shift_type" id="st1" value="day" {{ 'checked' if st=='day' else '' }}>
-        <label class="btn btn-outline-primary" for="st1">주간</label>
-        <input type="radio" class="btn-check" name="shift_type" id="st2" value="night" {{ 'checked' if st=='night' else '' }}>
-        <label class="btn btn-outline-primary" for="st2">야간</label>
-      </div>
-    </div>
-    <div class="col-12">
-      <label class="form-label d-block">선호 요일</label>
-      {% set labels=['월','화','수','목','금','토','일'] %}
-      {% set sel = (item['work_days'] or '').split(',') if item else [] %}
-      {% for i in range(7) %}
-        <input class="btn-check" type="checkbox" name="work_days" value="{{ i }}" id="d{{ i }}" {% if (sel and str(i) in sel) %}checked{% endif %}>
-        <label class="btn btn-sm btn-outline-secondary me-1 mb-1" for="d{{ i }}">{{ labels[i] }}</label>
-      {% endfor %}
-    </div>
-  </div>
-  <div class="text-end mt-3">
-    <button class="btn btn-primary">저장</button>
-    <a class="btn btn-outline-secondary" href="{{ url_for('staff_list') }}">취소</a>
-  </div>
-</form>
-{% endblock %}
+    <div class="col-md-6">
+      <label class="form-label">근무타입</label>
+      <select name="shift_type" class="form-select">
+        <option value="day">주간</option>
+        <option value="night">야간</option>
+      </select

@@ -1,87 +1,80 @@
 from flask import Flask, render_template, request, redirect, url_for, session, send_file, jsonify
-import sqlite3, os, io, hashlib, random, hmac, unicodedata
-import pandas as pd
+import os, io, random, hashlib, unicodedata, hmac, pandas as pd
 from datetime import datetime, timedelta
 from functools import wraps
+import sqlite3
+import psycopg2
+import psycopg2.extras
 
-# ── 기본 설정 ───────────────────────────────────────────────────────────────
+# ────────────── 기본 설정 ──────────────
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "pcbang_secret")
 
 ADMIN_USER = os.getenv("ADMIN_USER", "admin")
-ADMIN_PASS = os.getenv("ADMIN_PASS", "방영민1!")  # 영문자판 쓰려면 환경변수에 qkddudals1! 설정
+ADMIN_PASS = os.getenv("ADMIN_PASS", "방영민1!")  # 또는 qkddudals1!
 
+DB_URL = os.getenv("DATABASE_URL")
 BASE_DIR = os.path.dirname(__file__)
-DB_PATH = os.path.join(BASE_DIR, 'data', 'pcbang.db')
+DB_PATH = os.path.join(BASE_DIR, "data", "pcbang.db")
+
 BRANCHES = ["지점 A", "지점 B"]
 
-# ── DB ───────────────────────────────────────────────────────────────────────
-def init_db():
-    os.makedirs(os.path.join(BASE_DIR, 'data'), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS staff(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      phone TEXT,
-      shift_type TEXT,          -- day/night
-      work_days TEXT            -- CSV of 0..6 (월=0)
-    )""")
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS shifts(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      staff_id INTEGER,
-      work_date TEXT,           -- YYYY-MM-DD
-      branch TEXT,
-      start_time TEXT,          -- HH:MM
-      end_time TEXT,            -- HH:MM
-      FOREIGN KEY(staff_id) REFERENCES staff(id)
-    )""")
-    conn.commit(); conn.close()
-
-def ensure_schema():
-    """테이블 없으면 즉시 생성 (배포 초기 안전장치)"""
-    try:
+# ────────────── DB 연결 ──────────────
+def get_conn():
+    if DB_URL:
+        conn = psycopg2.connect(DB_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    else:
+        os.makedirs(os.path.join(BASE_DIR, "data"), exist_ok=True)
         conn = sqlite3.connect(DB_PATH)
-        conn.execute("SELECT 1 FROM staff LIMIT 1")
-        conn.execute("SELECT 1 FROM shifts LIMIT 1")
-        conn.close()
-    except sqlite3.OperationalError:
-        init_db()
-
-# 앱 로드 시 1회 보장
-init_db()
-
-def db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+        conn.row_factory = sqlite3.Row
     return conn
 
-# ── 유틸 ─────────────────────────────────────────────────────────────────────
-def norm(s: str) -> str:
-    return unicodedata.normalize("NFC", (s or "")).strip()
+def init_db():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS staff(
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      phone TEXT,
+      shift_type TEXT,
+      work_days TEXT
+    );
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS shifts(
+      id SERIAL PRIMARY KEY,
+      staff_id INTEGER REFERENCES staff(id),
+      work_date TEXT,
+      branch TEXT,
+      start_time TEXT,
+      end_time TEXT
+    );
+    """)
+    conn.commit(); conn.close()
 
-def secure_eq(a: str, b: str) -> bool:
-    return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+init_db()
 
-def hash_color(name: str):
-    h = int(hashlib.sha256(name.encode("utf-8")).hexdigest(), 16)
-    r = 80 + (h % 150)
-    g = 80 + ((h >> 8) % 150)
-    b = 80 + ((h >> 16) % 150)
-    return f"#{r:02x}{g:02x}{b:02x}"
+# ────────────── 유틸 ──────────────
+def norm(s): return unicodedata.normalize("NFC", (s or "")).strip()
+def secure_eq(a,b): return hmac.compare_digest(a.encode(), b.encode())
+
+def hash_color(name:str):
+    h = int(hashlib.sha256(name.encode()).hexdigest(), 16)
+    r = 70 + (h % 150)
+    g = 100 + ((h>>8)%120)
+    b = 120 + ((h>>16)%100)
+    return f"rgb({r},{g},{b})"
 
 def hours_between(start, end):
     try:
-        sH,sM = map(int,start.split(":")); eH,eM = map(int,end.split(":"))
-        s = sH*60+sM; e = eH*60+eM
-        if e < s: e += 24*60
+        sH,sM=map(int,start.split(":")); eH,eM=map(int,end.split(":"))
+        s=sH*60+sM; e=eH*60+eM
+        if e<s: e+=24*60
         return (e-s)/60.0
-    except: 
-        return 0.0
+    except: return 0.0
 
-# ── 인증 ────────────────────────────────────────────────────────────────────
+# ────────────── 인증 ──────────────
 def login_required(f):
     @wraps(f)
     def wrap(*a, **k):
@@ -92,15 +85,13 @@ def login_required(f):
 
 @app.route("/login", methods=["GET","POST"])
 def login():
-    error = None
-    if request.method == "POST":
-        uid = norm(request.form.get("username"))
-        pwd = norm(request.form.get("password"))
-        if secure_eq(uid, norm(ADMIN_USER)) and secure_eq(pwd, norm(ADMIN_PASS)):
-            session["logged_in"] = True
-            session.permanent = True
+    error=None
+    if request.method=="POST":
+        u,p = norm(request.form["username"]), norm(request.form["password"])
+        if secure_eq(u, ADMIN_USER) and secure_eq(p, ADMIN_PASS):
+            session["logged_in"]=True
             return redirect(url_for("dashboard"))
-        error = "아이디 또는 비밀번호가 올바르지 않습니다."
+        error="아이디 또는 비밀번호가 올바르지 않습니다."
     return render_template("login.html", error=error)
 
 @app.route("/logout")
@@ -108,172 +99,130 @@ def logout():
     session.clear()
     return redirect(url_for("login"))
 
-# ── 페이지 ──────────────────────────────────────────────────────────────────
+# ────────────── 메인 대시보드 ──────────────
 @app.route("/")
 @login_required
 def dashboard():
-    ensure_schema()
     return render_template("dashboard.html", branches=BRANCHES)
 
-@app.route("/staff")
-@login_required
-def staff_list():
-    ensure_schema()
-    conn = db()
-    rows = conn.execute("SELECT * FROM staff ORDER BY name").fetchall()
-    conn.close()
-    return render_template("staff.html", staff=rows, color=hash_color)
-
-@app.route("/staff/add", methods=["GET","POST"])
-@login_required
-def staff_add():
-    ensure_schema()
-    if request.method=="POST":
-        name=norm(request.form.get("name",""))
-        phone=norm(request.form.get("phone",""))
-        shift=request.form.get("shift_type","day")
-        days=",".join(request.form.getlist("work_days"))
-        conn=db()
-        conn.execute("INSERT INTO staff(name,phone,shift_type,work_days) VALUES (?,?,?,?)",
-                     (name,phone,shift,days))
-        conn.commit(); conn.close()
-        return redirect(url_for("staff_list"))
-    return render_template("staff_form.html", item=None)
-
-@app.route("/staff/edit/<int:sid>", methods=["GET","POST"])
-@login_required
-def staff_edit(sid):
-    ensure_schema()
-    conn=db()
-    row=conn.execute("SELECT * FROM staff WHERE id=?", (sid,)).fetchone()
-    if not row:
-        conn.close(); return "Not found",404
-    if request.method=="POST":
-        name=norm(request.form.get("name", row["name"]))
-        phone=norm(request.form.get("phone", row["phone"]))
-        shift=request.form.get("shift_type", row["shift_type"])
-        days=",".join(request.form.getlist("work_days")) or row["work_days"]
-        conn.execute("UPDATE staff SET name=?, phone=?, shift_type=?, work_days=? WHERE id=?",
-                     (name,phone,shift,days,sid))
-        conn.commit(); conn.close()
-        return redirect(url_for("staff_list"))
-    conn.close()
-    return render_template("staff_form.html", item=row)
-
-@app.route("/staff/delete/<int:sid>", methods=["POST"])
-@login_required
-def staff_delete(sid):
-    ensure_schema()
-    conn=db()
-    conn.execute("DELETE FROM staff WHERE id=?", (sid,))
-    conn.commit(); conn.close()
-    return redirect(url_for("staff_list"))
-
-# ── 캘린더 API (클릭/선택 → 모달로 추가/삭제) ───────────────────────────────
 @app.route("/api/staff")
 @login_required
 def api_staff():
-    ensure_schema()
-    conn = db()
-    rows = conn.execute("SELECT id, name, shift_type FROM staff ORDER BY name").fetchall()
-    conn.close()
-    return jsonify([{"id": r["id"], "name": r["name"], "shift_type": r["shift_type"]} for r in rows])
+    conn = get_conn(); cur = conn.cursor()
+    cur.execute("SELECT id,name,shift_type FROM staff ORDER BY name;")
+    data = cur.fetchall(); conn.close()
+    return jsonify(data)
 
 @app.route("/api/events")
 @login_required
 def api_events():
-    ensure_schema()
-    start = request.args.get("start","")[:10]
-    end   = request.args.get("end","")[:10]
-    conn = db()
-    rows = conn.execute("""
-      SELECT sh.id, sh.work_date, sh.start_time, sh.end_time, sh.branch,
-             st.name, st.shift_type
-      FROM shifts sh JOIN staff st ON st.id=sh.staff_id
-      WHERE sh.work_date BETWEEN ? AND ?
-    """,(start,end)).fetchall()
-    conn.close()
+    start=request.args.get("start","")[:10]; end=request.args.get("end","")[:10]
+    branch=request.args.get("branch")
+    conn=get_conn(); cur=conn.cursor()
+    q = """
+    SELECT sh.id, sh.work_date, sh.start_time, sh.end_time, sh.branch, st.name, st.shift_type
+    FROM shifts sh JOIN staff st ON st.id=sh.staff_id
+    WHERE sh.work_date BETWEEN %s AND %s
+    """
+    params=[start,end]
+    if branch and branch!="all":
+        q+=" AND sh.branch=%s"; params.append(branch)
+    q+=" ORDER BY sh.work_date, st.name"
+    cur.execute(q,params); rows=cur.fetchall(); conn.close()
+
     events=[]
     for r in rows:
-        title = f"{r['name']} {r['start_time']}-{r['end_time']} ({r['branch']})"
-        color = hash_color(r['name'])
-        bg = "rgba(100,150,255,0.18)" if r['shift_type']=="day" else "rgba(30,50,90,0.55)"
+        color=hash_color(r["name"])
+        bg = "rgba(60,130,255,0.3)" if r["shift_type"]=="day" else "rgba(30,30,60,0.7)"
         events.append({
-            "id": r["id"],
-            "title": title,
-            "start": f"{r['work_date']}T{r['start_time']}:00",
-            "end":   f"{r['work_date']}T{r['end_time']}:00",
-            "display": "block",
-            "color": color,
-            "backgroundColor": bg,
-            "borderColor": color
+            "id":r["id"],
+            "title":f"{r['name']} ({r['branch']})",
+            "start":f"{r['work_date']}T{r['start_time']}:00",
+            "end":f"{r['work_date']}T{r['end_time']}:00",
+            "color":color,
+            "backgroundColor":bg,
+            "textColor":"#fff" if r["shift_type"]=="night" else "#000"
         })
     return jsonify(events)
 
 @app.route("/api/schedule", methods=["POST"])
 @login_required
 def api_schedule_create():
-    ensure_schema()
-    data = request.get_json(force=True)
-    conn = db()
-    conn.execute("""INSERT INTO shifts (staff_id, work_date, branch, start_time, end_time)
-                    VALUES (?,?,?,?,?)""",
-                 (data["staff_id"], data["work_date"], data["branch"], data["start_time"], data["end_time"]))
+    d=request.get_json(force=True)
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("""INSERT INTO shifts (staff_id,work_date,branch,start_time,end_time)
+                   VALUES (%s,%s,%s,%s,%s)""",
+                (d["staff_id"], d["work_date"], d["branch"], d["start_time"], d["end_time"]))
     conn.commit(); conn.close()
-    return jsonify({"ok":True})
+    return jsonify(ok=True)
 
 @app.route("/api/schedule/<int:sid>", methods=["DELETE"])
 @login_required
 def api_schedule_delete(sid):
-    ensure_schema()
-    conn = db()
-    conn.execute("DELETE FROM shifts WHERE id=?", (sid,))
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("DELETE FROM shifts WHERE id=%s",(sid,))
     conn.commit(); conn.close()
-    return jsonify({"ok":True})
+    return jsonify(ok=True)
 
-# ── 리포트/엑셀 ──────────────────────────────────────────────────────────────
+# ────────────── 직원 관리 ──────────────
+@app.route("/staff")
+@login_required
+def staff_list():
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("SELECT * FROM staff ORDER BY name;")
+    rows=cur.fetchall(); conn.close()
+    return render_template("staff.html", staff=rows, color=hash_color)
+
+@app.route("/staff/add", methods=["GET","POST"])
+@login_required
+def staff_add():
+    if request.method=="POST":
+        name=norm(request.form["name"]); phone=request.form["phone"]
+        shift=request.form["shift_type"]; days=",".join(request.form.getlist("work_days"))
+        conn=get_conn(); cur=conn.cursor()
+        cur.execute("INSERT INTO staff (name,phone,shift_type,work_days) VALUES (%s,%s,%s,%s)",
+                    (name,phone,shift,days))
+        conn.commit(); conn.close()
+        return redirect(url_for("staff_list"))
+    return render_template("staff_form.html")
+
+# ────────────── 리포트 ──────────────
 @app.route("/report")
 @login_required
 def report():
-    ensure_schema()
-    conn = db()
-    q = """
-    SELECT st.id sid, st.name, st.phone, st.shift_type, sh.start_time, sh.end_time
-    FROM staff st LEFT JOIN shifts sh ON st.id=sh.staff_id
-    """
-    rows = conn.execute(q).fetchall(); conn.close()
-    totals = {}
+    conn=get_conn(); cur=conn.cursor()
+    cur.execute("""
+      SELECT st.id, st.name, st.shift_type, sh.start_time, sh.end_time
+      FROM staff st LEFT JOIN shifts sh ON st.id=sh.staff_id
+    """)
+    rows=cur.fetchall(); conn.close()
+    totals={}
     for r in rows:
-        t = totals.setdefault(r["sid"], {"name":r["name"],"phone":r["phone"],"shift":r["shift_type"],"hours":0.0})
+        t=totals.setdefault(r["id"],{"name":r["name"],"shift":r["shift_type"],"hours":0})
         if r["start_time"] and r["end_time"]:
-            t["hours"] += hours_between(r["start_time"], r["end_time"])
+            t["hours"]+=hours_between(r["start_time"],r["end_time"])
     return render_template("report.html", totals=list(totals.values()))
 
 @app.route("/export_excel")
 @login_required
 def export_excel():
-    ensure_schema()
-    conn = db()
-    df = pd.read_sql_query("""
-        SELECT st.name '직원', st.phone '전화', st.shift_type '타입',
-               sh.work_date '날짜', sh.branch '지점', sh.start_time '시작', sh.end_time '종료'
-        FROM shifts sh JOIN staff st ON st.id=sh.staff_id
-        ORDER BY sh.work_date, st.name
+    conn=get_conn()
+    df=pd.read_sql("""
+      SELECT st.name '직원', st.phone '전화', st.shift_type '타입',
+             sh.work_date '날짜', sh.branch '지점', sh.start_time '시작', sh.end_time '종료'
+      FROM shifts sh JOIN staff st ON st.id=sh.staff_id ORDER BY sh.work_date, st.name
     """, conn)
     conn.close()
-    if df.empty:
-        df = pd.DataFrame(columns=['직원','전화','타입','날짜','지점','시작','종료'])
-    bio = io.BytesIO()
-    with pd.ExcelWriter(bio, engine="openpyxl") as w:
-        df.to_excel(w, index=False, sheet_name="근무기록")
+    if df.empty: df=pd.DataFrame(columns=['직원','전화','타입','날짜','지점','시작','종료'])
+    bio=io.BytesIO()
+    with pd.ExcelWriter(bio,engine="openpyxl") as w: df.to_excel(w,index=False)
     bio.seek(0)
-    filename = f"근무기록_{datetime.now().strftime('%Y%m%d')}.xlsx"
-    return send_file(bio, as_attachment=True, download_name=filename,
+    return send_file(bio,as_attachment=True,
+                     download_name=f"근무기록_{datetime.now():%Y%m%d}.xlsx",
                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 @app.route("/health")
-def health():
-    return "ok",200
+def health(): return "ok",200
 
 if __name__=="__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",8000)))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT",8000)))

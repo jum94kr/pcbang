@@ -1,20 +1,18 @@
 {% extends 'base.html' %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h4 class="m-0">근무 리포트</h4>
-  <a class="btn btn-outline-primary" href="{{ url_for('export_excel') }}">엑셀로 내보내기</a>
-</div>
+<h4 class="mb-3">근무시간 리포트</h4>
 <div class="card p-3 shadow-sm">
-  <canvas id="chart" height="90"></canvas>
+  <table class="table align-middle text-center">
+    <thead><tr><th>직원명</th><th>타입</th><th>총 근무시간(시간)</th></tr></thead>
+    <tbody>
+      {% for t in totals %}
+      <tr>
+        <td>{{ t.name }}</td>
+        <td>{{ t.shift }}</td>
+        <td>{{ "%.1f"|format(t.hours) }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
 </div>
-<script>
-const totals = {{ totals|tojson }};
-const labels = totals.map(t => t.name);
-const data = totals.map(t => t.hours);
-new Chart(document.getElementById('chart'), {
-  type: 'bar',
-  data: { labels, datasets: [{ label: '총 근무시간(시간)', data }] },
-  options: { responsive: true, plugins: { legend: { display: true } } }
-});
-</script>
 {% endblock %}

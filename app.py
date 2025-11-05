@@ -1,6 +1,6 @@
 from flask import Flask, render_template, request, redirect, url_for, session, send_file, jsonify
 import os, io, random, hashlib, unicodedata, hmac, pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 from functools import wraps
 import sqlite3
 import psycopg2
@@ -52,7 +52,6 @@ def init_db():
     );
     """)
     conn.commit(); conn.close()
-
 init_db()
 
 # ────────────── 유틸 ──────────────
@@ -133,7 +132,7 @@ def api_events():
     events=[]
     for r in rows:
         color=hash_color(r["name"])
-        bg = "rgba(60,130,255,0.3)" if r["shift_type"]=="day" else "rgba(30,30,60,0.7)"
+        bg = "rgba(60,130,255,0.4)" if r["shift_type"]=="day" else "rgba(30,30,60,0.8)"
         events.append({
             "id":r["id"],
             "title":f"{r['name']} ({r['branch']})",
